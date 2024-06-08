@@ -17,8 +17,12 @@ mod errors;
 type DbPool = r2d2::Pool<ConnectionManager<PgConnection>>;
 
 use anyhow::Result;
+use axum::http::Method;
 use axum::routing::{delete, get, post, put};
+use tower_http::cors::{AllowHeaders, AllowOrigin, Any, CorsLayer};
 use tracing::info;
+use crate::handlers::alumni_handler::{get_alumni};
+use crate::services::alumni_service::AlumniService;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -47,12 +51,12 @@ async fn main() -> Result<()> {
             return Err(anyhow::anyhow!("Failed to create pool"));
         }
     };
-
     // Wrap the pool in Arc
-    let arc_pool = Arc::new(pool);
+    let arc_pool = Arc::new(pool.clone());
 
     // Instantiate StaffServiceImpl with Arc<DbPool>
     let staff_service = Arc::new(StaffServiceImpl::new(arc_pool.clone())) as Arc<dyn StaffService + Send + Sync>;
+    let alumni_service = Arc::new(AlumniService::new(Arc::new(pool.clone())));
 
     // Create the application with routes and middlewares
     let app = Router::new()
@@ -60,12 +64,25 @@ async fn main() -> Result<()> {
         .route("/staff/:id", axum::routing::get(handlers::staff_handler::read))
         .route("/staff/:id", axum::routing::put(handlers::staff_handler::update))
         .route("/staff/:id", axum::routing::delete(handlers::staff_handler::delete))
-        .layer(Extension(staff_service.clone())); // Ensure the staff_service is added as an extension
-
+        .route("/staffs", get(handlers::staff_handler::list))
+        .layer(Extension(staff_service.clone()))
+        .route("/alumni", get(get_alumni))
+        .layer(Extension(alumni_service.clone()))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::exact("http://localhost:63343".parse().unwrap()))
+                .allow_methods(vec![Method::GET, Method::POST, Method::PUT, Method::DELETE])
+                .allow_headers(AllowHeaders::list(vec![
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::header::ACCEPT,
+                ]))
+                .allow_credentials(true),
+        );
 
 
     // Bind the listener
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:6666").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
     // Run the server
     match axum::serve(listener, app.into_make_service()).await {
         Ok(_) => tracing::info!("Server is running"),

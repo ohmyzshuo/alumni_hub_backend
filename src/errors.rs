@@ -11,4 +11,8 @@ pub enum ServiceError {
     R2D2Error(#[from] R2D2Error),
     #[error("Join error: {0}")]
     JoinError(#[from] JoinError),
+    #[error("Unrecognized enum variant")]
+    UnrecognizedEnumVariant,
+    #[error("Unknown error")]
+    Unknown,
 }

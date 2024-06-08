@@ -13,6 +13,7 @@ type DbPool = Pool<ConnectionManager<PgConnection>>;
 pub trait StaffService: Send + Sync {
     async fn create_staff(&self, new_staff: NewStaff) -> Result<Staff, ServiceError>;
     async fn get_staff(&self, staff_id: i32) -> Result<Staff, ServiceError>;
+    async fn get_staffs(&self, page: i32, page_size: i32) -> Result<(Vec<Staff>, i64), ServiceError>;
     async fn update_staff(&self, staff_id: i32, updated_staff: UpdateStaff) -> Result<Staff, ServiceError>;
     async fn delete_staff(&self, staff_id: i32) -> Result<(), ServiceError>;
 }
@@ -40,23 +41,40 @@ impl StaffService for StaffServiceImpl {
 
     async fn get_staff(&self, staff_id: i32) -> Result<Staff, ServiceError> {
         let pool = self.pool.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let mut conn = pool.get().map_err(|e| {
-                eprintln!("Failed to get connection from pool: {:?}", e);
-                ServiceError::from(e)
-            })?;
-            let staff = staffs.find(staff_id).get_result(&mut conn).map_err(|e| {
-                eprintln!("Failed to find staff with id {}: {:?}", staff_id, e);
-                ServiceError::from(e)
-            })?;
-            Ok(staff)
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(ServiceError::from)?;
+            staffs.find(staff_id).get_result(&mut conn).map_err(ServiceError::from)
         })
-            .await;
+            .await?
+    }
 
-        result.map_err(|e| {
-            eprintln!("Error in spawn_blocking: {:?}", e);
-            ServiceError::from(e)
-        })?
+    async fn get_staffs(&self, page: i32, page_size: i32) -> Result<(Vec<Staff>, i64), ServiceError> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(ServiceError::from)?;
+            let offset = (page - 1) * page_size;
+            let total: i64 = staffs.count().get_result(&mut conn).map_err(ServiceError::from)?;
+            let results = staffs
+                .limit(page_size.into())
+                .offset(offset.into())
+                .load::<Staff>(&mut conn)
+                .map_err(|e| match e {
+                    diesel::result::Error::DeserializationError(err) => {
+                        if let Some(inner) = err.source() {
+                            if inner.to_string().contains("Unrecognized enum variant") {
+                                ServiceError::UnrecognizedEnumVariant
+                            } else {
+                                ServiceError::DieselError(diesel::result::Error::DeserializationError(err))
+                            }
+                        } else {
+                            ServiceError::DieselError(diesel::result::Error::DeserializationError(err))
+                        }
+                    },
+                    _ => ServiceError::from(e),
+                })?;
+            Ok((results, total))
+        })
+            .await?
     }
 
     async fn update_staff(&self, staff_id: i32, updated_staff: UpdateStaff) -> Result<Staff, ServiceError> {

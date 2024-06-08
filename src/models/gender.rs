@@ -28,11 +28,11 @@ impl Default for Gender {
 
 impl FromSql<Text, Pg> for Gender {
     fn from_sql(value: PgValue<'_>) -> DeserializeResult<Self> {
-        match value.as_bytes() {
-            b"NotSpecified" => Ok(Gender::NotSpecified),
-            b"Other" => Ok(Gender::Other),
-            b"Female" => Ok(Gender::Female),
-            b"Male" => Ok(Gender::Male),
+        match value.as_bytes().to_ascii_lowercase().as_slice() {
+            b"not_specified" | b"" => Ok(Gender::NotSpecified),
+            b"other" => Ok(Gender::Other),
+            b"female" => Ok(Gender::Female),
+            b"male" => Ok(Gender::Male),
             _ => Err("Unrecognized enum variant".into()),
         }
     }
@@ -41,7 +41,7 @@ impl FromSql<Text, Pg> for Gender {
 impl ToSql<Text, Pg> for Gender {
     fn to_sql(&self, out: &mut Output<Pg>) -> diesel::serialize::Result {
         match *self {
-            Gender::NotSpecified => out.write_all(b"NotSpecified")?,
+            Gender::NotSpecified => out.write_all(b"not_specified")?,
             Gender::Other => out.write_all(b"Other")?,
             Gender::Female => out.write_all(b"Female")?,
             Gender::Male => out.write_all(b"Male")?,
@@ -49,6 +49,7 @@ impl ToSql<Text, Pg> for Gender {
         Ok(IsNull::No)
     }
 }
+
 impl AsExpression<Nullable<Text>> for Gender {
     type Expression = Bound<Nullable<Text>, Self>;
 
