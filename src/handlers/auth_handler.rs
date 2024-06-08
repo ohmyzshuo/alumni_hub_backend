@@ -1,37 +1,68 @@
-use axum::{
-    extract::{Extension, Json},
-    response::IntoResponse,
-    http::StatusCode,
-    Router,
-};
-use serde::Deserialize;
-use sqlx::PgPool;
-use std::sync::Arc;
-use serde_json::json;
+use crate::schema::{alumnis, staffs};
+use diesel::prelude::*;
+use diesel::r2d2::{ConnectionManager, Pool};
+use jsonwebtoken::{encode, Header, EncodingKey, errors::Error as JwtError};
+use uuid::Uuid;
+use chrono::{Duration, Utc, NaiveDateTime};
+use serde::{Serialize, Deserialize};
+use bcrypt::{verify, hash, DEFAULT_COST};
+use std::env;
+use async_trait::async_trait;
+use crate::models::alumni::Alumni;
+use crate::models::staff::Staff;
+use crate::utils::auth_utils::{check_password_hash, extract_login_name};
 
-use crate::services::auth_service::{AuthService, Claims};
-
-#[derive(Deserialize)]
-struct LoginRequest {
-    username: String,
-    password: String,
+#[derive(Serialize, Deserialize)]
+struct Claims {
+    user_id: Uuid,
     role: String,
+    exp: usize,
 }
 
-pub async fn login(
-    Json(payload): Json<LoginRequest>,
-    Extension(pool): Extension<Arc<PgPool>>,
-    Extension(auth_service): Extension<Arc<AuthService>>,
-) -> impl IntoResponse {
-    match auth_service.authenticate_user(&pool, &payload.username, &payload.password, &payload.role).await {
-        Ok((user_id, role)) => {
-            match auth_service.generate_token(user_id, role) {
-                Ok(token) => (StatusCode::OK, Json(json!({ "code": 200, "data": { "token": token }, "message": "Success" }))),
-                Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "code": 500, "error": "Failed to generate token" }))),
-            }
-        },
-        Err(_) => (StatusCode::UNAUTHORIZED, Json(json!({ "code": 401, "error": "Invalid credentials" }))),
+type DbPool = Pool<ConnectionManager<PgConnection>>;
+
+pub struct AuthService {
+    secret: String,
+    pool: DbPool,
+}
+
+impl AuthService {
+    pub fn new(pool: DbPool) -> Self {
+        let secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set in the environment variables");
+        Self { secret, pool }
     }
-}
 
-// OTP handler functions can be added here following a similar pattern
+    pub async fn authenticate_user(
+        &self,
+        username: &str,
+        password: &str,
+        role: &str,
+    ) -> Result<(i32, String), diesel::result::Error> {
+        let mut conn = self.pool.get().expect("Failed to get DB connection");
+
+        if role == "alumni" {
+            let login_name = extract_login_name(username)?;
+
+            let alumnis = alumnis::dsl::alumnis;
+            let alumnus: Alumni = alumnis
+                .filter(alumnis::dsl::matric_no.ilike(format!("{}%", login_name)))
+                .first(&mut conn)?;
+
+            if check_password_hash(password, alumnus.password.as_deref().unwrap_or(""))? {
+                return Ok((alumnus.id, "alumni".to_string()));
+            }
+        } else if role == "staff" {
+            let staffs = staffs::dsl::staffs;
+            let staff: Staff = staffs
+                .filter(staffs::dsl::username.eq(username.to_lowercase()))
+                .first(&mut conn)?;
+
+            if check_password_hash(password, staff.password.as_deref().unwrap_or(""))? {
+                return Ok((staff.id, "admin".to_string()));
+            }
+        }
+
+        Err(diesel::result::Error::NotFound)
+    }
+
+}
